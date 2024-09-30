@@ -143,7 +143,7 @@
 "Shopping.OptInCard.PrivacyPolicy.Button.Title.v120" = "개인정보 보호정책";
 
 /* Show Firefox Browser Privacy Policy page from the Privacy section in the Shopping Experience Opt In onboarding Card (Fakespot). The parameter will be replace by the Firefox app name. */
-"Shopping.OptInCard.PrivacyPolicy.Button.Title.v123" = "%@의 개인 정보 보호 정책";
+"Shopping.OptInCard.PrivacyPolicy.Button.Title.v123" = "%@의 개인정보 보호정책";
 
 /* Text for the secondary button of the Shopping Experience Opt In onboarding Card (Fakespot) */
 "Shopping.OptInCard.SecondaryButton.Title.v120" = "나중에";
@@ -186,6 +186,9 @@
 
 /* Highlights label from How we determine review quality card displayed in the shopping review quality bottom sheet. The parameter substitutes the partner website the user is coming from. The *text inside asterisks* denotes part of the string to bold, please leave the text inside the '*' so that it is bolded correctly. */
 "Shopping.ReviewQualityCard.Highlights.Label.v120" = "*하이라이트*는 지난 80일 동안 신뢰할 수 있는 %1@의 리뷰에서 나온 것입니다.";
+
+/* Highlights label from How we determine review quality card displayed in the shopping review quality bottom sheet. The parameter substitutes the partner website the user is coming from. The *text inside asterisks* denotes part of the string to bold, please leave the text inside the '*' so that it is bolded correctly. */
+"Shopping.ReviewQualityCard.Highlights.Label.v126" = "*하이라이트* 는 지난 80일 동안 신뢰할 수 있다고 생각되는 %@개의 리뷰에서 나왔습니다.";
 
 /* Title of the 'How we determine review quality' card displayed in the shopping review quality bottom sheet. */
 "Shopping.ReviewQualityCard.Label.Title.v120" = "리뷰 품질을 결정하는 방법";
