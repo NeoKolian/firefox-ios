@@ -8,6 +8,7 @@ import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
+  ContentDOMReference: "resource://gre/modules/ContentDOMReference.sys.mjs",
   CreditCard: "resource://gre/modules/CreditCard.sys.mjs",
   FormAutofillNameUtils:
     "resource://gre/modules/shared/FormAutofillNameUtils.sys.mjs",
@@ -26,18 +27,24 @@ ChromeUtils.defineLazyGetter(
     )
 );
 
+XPCOMUtils.defineLazyServiceGetter(
+  lazy,
+  "Crypto",
+  "@mozilla.org/login-manager/crypto/SDR;1",
+  "nsILoginManagerCrypto"
+);
+
 export let FormAutofillUtils;
 
 const ADDRESSES_COLLECTION_NAME = "addresses";
 const CREDITCARDS_COLLECTION_NAME = "creditCards";
+const AUTOFILL_CREDITCARDS_REAUTH_PREF =
+  FormAutofill.AUTOFILL_CREDITCARDS_REAUTH_PREF;
 const MANAGE_ADDRESSES_L10N_IDS = [
   "autofill-add-address-title",
   "autofill-manage-addresses-title",
 ];
 const EDIT_ADDRESS_L10N_IDS = [
-  "autofill-address-given-name",
-  "autofill-address-additional-name",
-  "autofill-address-family-name",
   "autofill-address-name",
   "autofill-address-organization",
   "autofill-address-street",
@@ -83,9 +90,9 @@ const EDIT_CREDITCARD_L10N_IDS = [
   "autofill-card-network",
 ];
 const FIELD_STATES = {
-  NORMAL: "NORMAL",
-  AUTO_FILLED: "AUTO_FILLED",
-  PREVIEW: "PREVIEW",
+  NORMAL: "",
+  AUTO_FILLED: "autofill",
+  PREVIEW: "preview",
 };
 const FORM_SUBMISSION_REASON = {
   FORM_SUBMIT_EVENT: "form-submit-event",
@@ -107,6 +114,7 @@ FormAutofillUtils = {
 
   ADDRESSES_COLLECTION_NAME,
   CREDITCARDS_COLLECTION_NAME,
+  AUTOFILL_CREDITCARDS_REAUTH_PREF,
   MANAGE_ADDRESSES_L10N_IDS,
   EDIT_ADDRESS_L10N_IDS,
   MANAGE_CREDITCARDS_L10N_IDS,
@@ -127,6 +135,10 @@ FormAutofillUtils = {
     "address-line3": "address",
     "address-level1": "address",
     "address-level2": "address",
+    // DE addresses are often split into street name and house number;
+    // combined they form address-line1
+    "address-streetname": "address",
+    "address-housenumber": "address",
     "postal-code": "address",
     country: "address",
     "country-name": "address",
@@ -168,10 +180,94 @@ FormAutofillUtils = {
     return ccNumber && lazy.CreditCard.isValidNumber(ccNumber);
   },
 
-  ensureLoggedIn(promptMessage) {
-    return lazy.OSKeyStore.ensureLoggedIn(
-      this._reauthEnabledByUser && promptMessage ? promptMessage : false
+  /**
+   * Get the decrypted value for a string pref.
+   *
+   * @param {string} prefName -> The pref whose value is needed.
+   * @param {string} safeDefaultValue -> Value to be returned incase the pref is not yet set.
+   * @returns {string}
+   */
+  getSecurePref(prefName, safeDefaultValue) {
+    if (Services.prefs.getBoolPref("security.nocertdb", false)) {
+      return false;
+    }
+    try {
+      const encryptedValue = Services.prefs.getStringPref(prefName, "");
+      return encryptedValue === ""
+        ? safeDefaultValue
+        : lazy.Crypto.decrypt(encryptedValue);
+    } catch {
+      return safeDefaultValue;
+    }
+  },
+
+  /**
+   * Set the pref to the encrypted form of the value.
+   *
+   * @param {string} prefName -> The pref whose value is to be set.
+   * @param {string} value -> The value to be set in its encrypted form.
+   */
+  setSecurePref(prefName, value) {
+    if (Services.prefs.getBoolPref("security.nocertdb", false)) {
+      return;
+    }
+    if (value) {
+      const encryptedValue = lazy.Crypto.encrypt(value);
+      Services.prefs.setStringPref(prefName, encryptedValue);
+    } else {
+      Services.prefs.clearUserPref(prefName);
+    }
+  },
+
+  /**
+   * Get whether the OSAuth is enabled or not.
+   *
+   * @param {string} prefName -> The name of the pref (creditcards or addresses)
+   * @returns {boolean}
+   */
+  getOSAuthEnabled(prefName) {
+    return (
+      lazy.OSKeyStore.canReauth() &&
+      this.getSecurePref(prefName, "") !== "opt out"
     );
+  },
+
+  /**
+   * Set whether the OSAuth is enabled or not.
+   *
+   * @param {string} prefName -> The pref to encrypt.
+   * @param {boolean} enable -> Whether the pref is to be enabled.
+   */
+  setOSAuthEnabled(prefName, enable) {
+    this.setSecurePref(prefName, enable ? null : "opt out");
+  },
+
+  async verifyUserOSAuth(
+    prefName,
+    promptMessage,
+    captionDialog = "",
+    parentWindow = null,
+    generateKeyIfNotAvailable = true
+  ) {
+    if (!this.getOSAuthEnabled(prefName)) {
+      promptMessage = false;
+    }
+    try {
+      return (
+        await lazy.OSKeyStore.ensureLoggedIn(
+          promptMessage,
+          captionDialog,
+          parentWindow,
+          generateKeyIfNotAvailable
+        )
+      ).authenticated;
+    } catch (ex) {
+      // Since Win throws an exception whereas Mac resolves to false upon cancelling.
+      if (ex.result !== Cr.NS_ERROR_FAILURE) {
+        throw ex;
+      }
+    }
+    return false;
   },
 
   /**
@@ -289,6 +385,15 @@ FormAutofillUtils = {
   },
 
   /**
+   * Returns false if an address is written <number> <street>
+   * and true if an address is written <street> <number>. In the future, this
+   * can be expanded to format an address
+   */
+  getAddressReversed(region) {
+    return this.getCountryAddressData(region).address_reversed;
+  },
+
+  /**
    * In-place concatenate tel-related components into a single "tel" field and
    * delete unnecessary fields.
    *
@@ -344,13 +449,19 @@ FormAutofillUtils = {
       element.checkVisibility &&
       !FormAutofillUtils.ignoreVisibilityCheck
     ) {
-      return element.checkVisibility({
-        checkOpacity: true,
-        checkVisibilityCSS: true,
-      });
+      if (
+        !element.checkVisibility({
+          checkOpacity: true,
+          checkVisibilityCSS: true,
+        })
+      ) {
+        return false;
+      }
+    } else if (element.hidden || element.style.display == "none") {
+      return false;
     }
 
-    return !element.hidden && element.style.display != "none";
+    return element.getAttribute("aria-hidden") != "true";
   },
 
   /**
@@ -796,7 +907,8 @@ FormAutofillUtils = {
               keys,
               names,
               option.text,
-              collators
+              collators,
+              true
             );
             if (
               identifiedValue === optionValue ||
@@ -947,21 +1059,26 @@ FormAutofillUtils = {
 
   /**
    * Try to match value with keys and names, but always return the key.
+   * If inexactMatch is true, then a substring match is performed, otherwise
+   * the string must match exactly.
    *
    * @param   {Array<string>} keys
    * @param   {Array<string>} names
    * @param   {string} value
    * @param   {Array} collators
+   * @param   {bool} inexactMatch
    * @returns {string}
    */
-  identifyValue(keys, names, value, collators) {
+  identifyValue(keys, names, value, collators, inexactMatch = false) {
     let resultKey = keys.find(key => this.strCompare(value, key, collators));
     if (resultKey) {
       return resultKey;
     }
 
     let index = names.findIndex(name =>
-      this.strCompare(value, name, collators)
+      inexactMatch
+        ? this.strInclude(value, name, collators)
+        : this.strCompare(value, name, collators)
     );
     if (index !== -1) {
       return keys[index];
@@ -1205,6 +1322,78 @@ FormAutofillUtils = {
         messageID = msgOther;
     }
     return lazy.l10n.formatValueSync(messageID);
+  },
+
+  /**
+   * Retrieves a unique identifier for a given DOM element.
+   * Note that the identifier generated by ContentDOMReference is an object but
+   * this API serializes it to string to make lookup easier.
+   *
+   * @param {Element} element The DOM element from which to generate an identifier.
+   * @returns {string} A unique identifier for the element.
+   */
+  getElementIdentifier(element) {
+    let id;
+    try {
+      id = JSON.stringify(lazy.ContentDOMReference.get(element));
+    } catch {
+      // This is needed because when running in xpc-shell test, we don't have
+      const entry = Object.entries(this._elementByElementId).find(
+        e => e[1] == element
+      );
+      if (entry) {
+        id = entry[0];
+      } else {
+        id = Services.uuid.generateUUID().toString();
+        this._elementByElementId[id] = element;
+      }
+    }
+    return id;
+  },
+
+  /**
+   * Maps element identifiers to their corresponding DOM elements.
+   * Only used when we can't get the identifier via ContentDOMReference,
+   * for example, xpcshell test.
+   */
+  _elementByElementId: {},
+
+  /**
+   * Retrieves the DOM element associated with the specific identifier.
+   * The identifier should be generated with the `getElementIdentifier` API
+   *
+   * @param {string} elementId The identifier of the element.
+   * @returns {Element} The DOM element associated with the given identifier.
+   */
+  getElementByIdentifier(elementId) {
+    let element;
+    try {
+      element = lazy.ContentDOMReference.resolve(JSON.parse(elementId));
+    } catch {
+      element = this._elementByElementId[elementId];
+    }
+    return element;
+  },
+
+  /**
+   * This function is used to determine the frames that can also be autofilled
+   * when users trigger autofill on the focusd frame.
+   *
+   * Currently we also autofill when for frames that
+   * 1. is top-level.
+   * 2. is same origin with the top-level.
+   * 3. is same origin with the frame that triggers autofill.
+   *
+   * @param {BrowsingContext} browsingContext
+   *        frame to be checked whether we can also autofill
+   */
+  isBCSameOriginWithTop(browsingContext) {
+    return (
+      browsingContext.top == browsingContext ||
+      browsingContext.currentWindowGlobal.documentPrincipal.equals(
+        browsingContext.top.currentWindowGlobal.documentPrincipal
+      )
+    );
   },
 };
 
