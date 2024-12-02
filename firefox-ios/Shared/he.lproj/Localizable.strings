@@ -37,9 +37,6 @@
 /* Section title label for recently visited websites */
 "ActivityStream.RecentHistory.Title" = "נצפה לאחרונה";
 
-/* Section title label for Shortcuts */
-"ActivityStream.Shortcuts.SectionTitle" = "קיצורי דרך";
-
 /* The title for the setting page which lets you select the number of top site rows */
 "ActivityStream.TopSites.RowSettingFooter" = "הגדרת שורות";
 
@@ -482,7 +479,7 @@
 "HomePanel.ContextMenu.Remove" = "הסרה";
 
 /* The title for the Remove Bookmark context menu action for sites in Home Panels */
-"HomePanel.ContextMenu.RemoveBookmark" = "הסרה מהמועדפים";
+"HomePanel.ContextMenu.RemoveBookmark" = "הסרת סימנייה";
 
 /* The title for the Share context menu action for sites in Home Panels */
 "HomePanel.ContextMenu.Share" = "שיתוף";
